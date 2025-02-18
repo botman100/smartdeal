@@ -6,17 +6,16 @@ from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 import time
 import random
-import json
-import pandas as pd
-from telegram import Bot
-from telegram.constants import ParseMode
-from telegram.error import TelegramError
-import chromedriver_autoinstaller
 import asyncio
 import logging
 import os
 from dotenv import load_dotenv
-from flask import Flask, request
+from flask import Flask
+from telegram import Bot
+from telegram.constants import ParseMode
+from telegram.error import TelegramError
+import chromedriver_autoinstaller
+import pandas as pd
 
 # Load environment variables from .env file
 load_dotenv()
@@ -76,14 +75,19 @@ def shorten_url(original_url, retries=3):
         try:
             # Encode the original URL
             encoded_url = requests.utils.quote(original_url)
+
             # Create a unique alias
             custom_alias = generate_unique_alias()
+
             # Prepare the API request
             api_request_url = f"{SHORTEN_API_URL}?api={API_TOKEN}&url={encoded_url}&alias={custom_alias}"
+
             # Send the request to shorten the URL
             response = requests.get(api_request_url, timeout=20).json()
+
             if response.get("status") == "success":
                 shortened_url = response.get("shortenedUrl")
+                print(f"Shortened URL: {shortened_url}")
                 return shortened_url
             elif response.get("message") == "Alias already exists.":
                 # Alias already exists, try again
@@ -94,6 +98,7 @@ def shorten_url(original_url, retries=3):
         except requests.exceptions.RequestException as e:
             print(f"Error in URL shortening (Attempt {attempt + 1}): {e}")
             time.sleep(2 ** attempt)  # Exponential backoff
+
     print("Exceeded maximum retries for URL shortening.")
     return original_url  # Return original URL if all retries fail
 
@@ -103,77 +108,82 @@ def fetch_deals(retries=3):
         try:
             # Automatically install and set up ChromeDriver
             chromedriver_autoinstaller.install()
+
             # Set up Chrome options
             chrome_options = Options()
-            chrome_options.add_argument("--headless")  # Run in headless mode
-            chrome_options.add_argument(f"user-agent={random.choice(USER_AGENTS)}")  # Rotate User-Agent
-            chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # Avoid detection as a bot
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument(f"user-agent={random.choice(USER_AGENTS)}")
+            chrome_options.add_argument("--ignore-certificate-errors")
+            chrome_options.add_argument("--allow-insecure-localhost")
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
             chrome_options.add_argument("--disable-dev-shm-usage")
             chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-gpu")  # Disable GPU acceleration
-            chrome_options.add_argument("--enable-unsafe-swiftshader")  # Enable unsafe SwiftShader
-            chrome_options.add_argument("--disable-webgpu")  # Disable WebGPU
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--enable-unsafe-swiftshader")
+            chrome_options.add_argument("--disable-webgpu")
+
             # Initialize the WebDriver
             driver_service = Service()
             driver = webdriver.Chrome(service=driver_service, options=chrome_options)
+
             # Open the deals page
             print("Opening URL in Selenium:", URL)
             driver.get(URL)
-            time.sleep(random.uniform(5, 10))  # Wait for page to load
+            time.sleep(random.uniform(5, 10))
+
             # Scroll to load all deals
             last_height = driver.execute_script("return document.body.scrollHeight")
             while True:
-                # Scroll down to bottom
                 driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                time.sleep(random.uniform(2, 4))  # Wait for new deals to load
-                # Calculate new scroll height and compare with last scroll height
+                time.sleep(random.uniform(2, 4))
                 new_height = driver.execute_script("return document.body.scrollHeight")
                 if new_height == last_height:
                     break
                 last_height = new_height
+
                 # Try to click "Load More" button if present
                 try:
                     load_more = driver.find_element(By.CLASS_NAME, 'sm-load-more')
                     load_more.click()
-                    time.sleep(random.uniform(3, 5))  # Wait for new deals to load
+                    time.sleep(random.uniform(3, 5))
                 except Exception as e:
                     print(f"Load More button not found or already clicked: {e}")
                     break
+
             # Parse the page source with BeautifulSoup
             soup = BeautifulSoup(driver.page_source, 'html.parser')
             driver.quit()
+
             # Find all deal containers
             deals = soup.find_all("div", class_="sm-deal", attrs={"data-way": ""})
-            # List to store extracted deals
             extracted_deals = []
+
             for deal in deals:
                 try:
-                    # Extract product name
                     product_name_tag = deal.find("a", class_="name clamp-3")
                     product_name = product_name_tag.get_text(strip=True) if product_name_tag else "N/A"
-                    # Extract deal price
+
                     deal_price_tag = deal.find("span", class_="price")
                     deal_price = deal_price_tag.get_text(strip=True) if deal_price_tag else "N/A"
-                    # Extract product image URL
+
                     image_tag = deal.find("img", class_="sm-img")
                     image_url = image_tag['src'] if image_tag and 'src' in image_tag.attrs else "N/A"
-                    # Extract deal link (direct link from the "Visit" button)
+
                     visit_button_tag = deal.find("a", class_="sm-btn flat white-grad size-xs", href=True)
                     visit_link = visit_button_tag["href"] if visit_button_tag else "N/A"
                     if visit_link.startswith("https://l.smartprix.com/l?k="):
-                        # Extract the actual URL from the "Visit" button
                         visit_response = requests.get(visit_link, allow_redirects=True, timeout=20)
                         full_link = visit_response.url
                     else:
                         full_link = visit_link
-                    # Create a unique identifier for the deal
+
                     deal_id = full_link
-                    # Validate all fields
                     if product_name == "N/A" or deal_price == "N/A" or image_url == "N/A" or full_link == "N/A":
                         continue
-                    # Shorten every 4th deal's link
-                    if len(extracted_deals) % 4 == 0:
-                        full_link = shorten_url(full_link)
+
+                    # Shorten every URL
+                    full_link = shorten_url(full_link)
+
                     extracted_deals.append({
                         "name": product_name,
                         "price": deal_price,
@@ -183,10 +193,13 @@ def fetch_deals(retries=3):
                     })
                 except Exception as e:
                     print(f"Error parsing a deal: {e}")
+
             return extracted_deals
+
         except requests.exceptions.RequestException as e:
             print(f"Error fetching deals (Attempt {attempt + 1}): {e}")
-            time.sleep(2 ** attempt)  # Exponential backoff
+            time.sleep(2 ** attempt)
+
     print("Exceeded maximum retries for fetching deals.")
     return []
 
@@ -202,11 +215,11 @@ def validate_image_url(image_url, retries=3):
                 return False
         except requests.exceptions.RequestException as e:
             print(f"Error validating image URL: {image_url}. Attempt {attempt + 1}: {e}")
-            time.sleep(2 ** attempt)  # Exponential backoff
+            time.sleep(2 ** attempt)
     print(f"Exceeded maximum retries for validating image URL: {image_url}.")
     return False
 
-# Function to escape Markdown characters (updated to include '!' and '?')
+# Function to escape Markdown characters (including '!' and '?')
 def escape_markdown(text):
     escape_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!', '?']
     for char in escape_chars:
@@ -218,29 +231,50 @@ async def send_deals_to_telegram(deals):
     if not deals:
         print("No new deals to send.")
         return
+
     for i, deal in enumerate(deals, start=1):
         try:
-            # Validate all fields
             if deal['name'] == "N/A" or deal['price'] == "N/A" or deal['link'] == "N/A":
                 continue
-            # Validate image URL
+
             if deal['image'] == "N/A" or not validate_image_url(deal['image']):
                 continue
+
             # Escape Markdown characters in product name and price
             escaped_product_name = escape_markdown(deal['name'])
             escaped_deal_price = escape_markdown(deal['price'])
-            # Note: The static text has been manually modified to escape '!'
-            message = f"🔥 *New Deal Alert\\!* 🔥\n\n" \
-                      f"🛍️ *Product:* {escaped_product_name}\n" \
-                      f"💰 *Price:* {escaped_deal_price}\n" \
-                      f"🔗 [View Deal]({deal['link']})"
-            # Send the image and message
-            await bot.send_photo(chat_id=CHANNEL_ID, photo=deal['image'], caption=message, parse_mode=ParseMode.MARKDOWN_V2)
+
+            # Build the message. Note the exclamation mark is escaped for MarkdownV2.
+            message = (
+                f"🔥 *New Deal Alert\\!* 🔥\n\n"
+                f"🛍️ *Product:* {escaped_product_name}\n"
+                f"💰 *Price:* {escaped_deal_price}\n"
+                f"🔗 [View Deal]({deal['link']})"
+            )
+
+            await bot.send_photo(
+                chat_id=CHANNEL_ID,
+                photo=deal['image'],
+                caption=message,
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
             print(f"Sent deal: {deal['name']}")
-            # Add delay of 12 seconds between sending each deal
             await asyncio.sleep(12)
         except TelegramError as e:
-            if "Flood control exceeded" in str(e):
+            if "Timed out" in str(e):
+                print(f"TelegramError (Timed out) for deal '{deal['name']}': {e}. Retrying in 30 seconds.")
+                await asyncio.sleep(30)
+                try:
+                    await bot.send_photo(
+                        chat_id=CHANNEL_ID,
+                        photo=deal['image'],
+                        caption=message,
+                        parse_mode=ParseMode.MARKDOWN_V2
+                    )
+                    print(f"Resent deal: {deal['name']}")
+                except Exception as e:
+                    print(f"Retry failed for {deal['name']}: {e}")
+            elif "Flood control exceeded" in str(e):
                 retry_after = int(e.retry_after) if hasattr(e, 'retry_after') else 10
                 print(f"TelegramError: {e}. Retrying in {retry_after} seconds.")
                 await asyncio.sleep(retry_after + random.uniform(1, 5))
@@ -254,7 +288,9 @@ async def send_deals_to_telegram(deals):
 # Function to save deals to CSV
 def save_deals_to_csv(deals):
     if not deals:
+        print("No deals to save to CSV.")
         return
+
     df = pd.DataFrame(deals)
     df.to_csv('smartprix_deals.csv', index=False)
     print("Deals saved to CSV.")
@@ -263,7 +299,6 @@ def save_deals_to_csv(deals):
 async def scheduled_job():
     deals = fetch_deals()
     print(f"Fetched {len(deals)} deals.")
-    # Filter out deals that have already been shared
     new_deals = [deal for deal in deals if deal['id'] not in shared_deals]
     print(f"Found {len(new_deals)} new deals.")
     if new_deals:
@@ -274,12 +309,10 @@ async def scheduled_job():
 # Create a Flask app
 app = Flask(__name__)
 
-# Route to keep the application alive
 @app.route('/')
 def home():
     return "Smartprix Deals Bot is running!"
 
-# Function to run the scheduled job
 def run_scheduled_job():
     asyncio.run(scheduled_job())
 
@@ -296,8 +329,12 @@ def run_continuously(interval=60):
 scheduler_thread = threading.Thread(target=run_continuously)
 scheduler_thread.start()
 
+# Schedule the job to run every 15 minutes
 schedule.every(15).minutes.do(run_scheduled_job)
 
+# Main function
 if __name__ == "__main__":
+    # First run to fetch and send deals immediately
     asyncio.run(scheduled_job())
+    # Run the Flask app
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
